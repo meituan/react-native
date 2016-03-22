@@ -14,6 +14,7 @@
 var RCTNetworking = require('RCTNetworking');
 var RCTDeviceEventEmitter = require('RCTDeviceEventEmitter');
 var invariant = require('fbjs/lib/invariant');
+var base64 = require('base64-js');
 
 const UNSENT = 0;
 const OPENED = 1;
@@ -45,7 +46,7 @@ class XMLHttpRequestBase {
   responseHeaders: ?Object;
   responseText: ?string;
   response: ?string;
-  responseType: '' | 'text';
+  responseType: '' | 'text' | 'arraybuffer';
   status: number;
   timeout: number;
   responseURL: ?string;
@@ -164,7 +165,15 @@ class XMLHttpRequestBase {
         );
         this.response = new Blob([this.responseText]);
         break;
-      default: //TODO: Support other types, eg: document, arraybuffer, json
+      case 'arraybuffer':
+        var bytes = base64.toByteArray(responseText).buffer;
+        if (!this.response) {
+          this.response = bytes;
+        } else {
+          this.response.push(bytes);
+        }
+        break;
+      default: //TODO: Support other types, eg: document, json
         invariant(false, `responseType "${this.responseType}" is unsupported`);
       }
       this.setReadyState(this.LOADING);

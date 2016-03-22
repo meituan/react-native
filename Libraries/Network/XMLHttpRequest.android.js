@@ -14,6 +14,7 @@
 var FormData = require('FormData');
 var RCTNetworking = require('RCTNetworking');
 var XMLHttpRequestBase = require('XMLHttpRequestBase');
+var base64 = require('base64-js');
 
 type Header = [string, string];
 
@@ -37,9 +38,12 @@ class XMLHttpRequest extends XMLHttpRequestBase {
           return part;
         }),
       };
+    } else if (data instanceof ArrayBuffer) {
+      body = {arraybuffer: base64.fromByteArray(new Uint8Array(data));}
     } else {
       body = data;
     }
+    headers['response-type'] = responseType;
     var useIncrementalUpdates = this.onreadystatechange ? true : false;
     var requestId = RCTNetworking.sendRequest(
       method,

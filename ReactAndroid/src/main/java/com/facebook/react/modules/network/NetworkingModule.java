@@ -40,6 +40,9 @@ import com.squareup.okhttp.RequestBody;
 import com.squareup.okhttp.Response;
 import com.squareup.okhttp.ResponseBody;
 
+import okio.Buffer;
+import okio.ByteString;
+
 import static java.lang.Math.min;
 
 /**
@@ -49,10 +52,14 @@ public final class NetworkingModule extends ReactContextBaseJavaModule {
 
   private static final String CONTENT_ENCODING_HEADER_NAME = "content-encoding";
   private static final String CONTENT_TYPE_HEADER_NAME = "content-type";
+  private static final String RESPONSE_TYPE_HEADER_NAME = "response-type";
   private static final String REQUEST_BODY_KEY_STRING = "string";
   private static final String REQUEST_BODY_KEY_URI = "uri";
   private static final String REQUEST_BODY_KEY_FORMDATA = "formData";
+  private static final String REQUEST_BODY_KEY_ARRAYBUFFER = "arraybuffer";
   private static final String USER_AGENT_HEADER_NAME = "user-agent";
+
+  private static final String ARRAYBUFFER_RESPONSE_TYPE = "arraybuffer";
 
   private static final int MIN_BUFFER_SIZE = 8 * 1024; // 8kb
   private static final int MAX_BUFFER_SIZE = 512 * 1024; // 512kb
@@ -151,6 +158,8 @@ public final class NetworkingModule extends ReactContextBaseJavaModule {
     }
     String contentType = requestHeaders.get(CONTENT_TYPE_HEADER_NAME);
     String contentEncoding = requestHeaders.get(CONTENT_ENCODING_HEADER_NAME);
+    final String responseType = requestHeaders.get(RESPONSE_TYPE_HEADER_NAME);
+    requestHeaders = requestHeaders.newBuilder().removeAll(RESPONSE_TYPE_HEADER_NAME).build();
     requestBuilder.headers(requestHeaders);
 
     if (data == null) {
@@ -204,6 +213,18 @@ public final class NetworkingModule extends ReactContextBaseJavaModule {
         return;
       }
       requestBuilder.method(method, multipartBuilder.build());
+    } else if(data.hasKey(REQUEST_BODY_KEY_ARRAYBUFFER)) {
+      if (contentType == null) {
+        onRequestError(
+          executorToken,
+          requestId,
+          "Payload is set but no content-type header specified");
+        return;
+      }
+      String base64Str = data.getString(REQUEST_BODY_KEY_ARRAYBUFFER);
+      ByteString body = ByteString.decodeBase64(base64Str);
+      MediaType contentMediaType = MediaType.parse(contentType);
+      requestBuilder.method(method, RequestBody.create(contentMediaType, body));
     } else {
       // Nothing in data payload, at least nothing we could understand anyway.
       requestBuilder.method(method, RequestBodyUtil.getEmptyBody(method));
@@ -231,10 +252,16 @@ public final class NetworkingModule extends ReactContextBaseJavaModule {
             ResponseBody responseBody = response.body();
             try {
               if (useIncrementalUpdates) {
-                readWithProgress(executorToken, requestId, responseBody);
+                if (ARRAYBUFFER_RESPONSE_TYPE.equals(responseType)) {
+                  readBinaryWithProgress(executorToken, requestId, responseBody);
+                } else {
+                  readWithProgress(executorToken, requestId, responseBody);
+                }
                 onRequestSuccess(executorToken, requestId);
               } else {
-                onDataReceived(executorToken, requestId, responseBody.string());
+                String body = ARRAYBUFFER_RESPONSE_TYPE.equals(responseType) ?
+                  ByteString.of(responseBody.bytes()).base64() : responseBody.string();
+                onDataReceived(executorToken, requestId, body);
                 onRequestSuccess(executorToken, requestId);
               }
             } catch (IOException e) {
@@ -269,6 +296,33 @@ public final class NetworkingModule extends ReactContextBaseJavaModule {
       }
     } finally {
       reader.close();
+    }
+  }
+
+  private void readBinaryWithProgress(
+    ExecutorToken executorToken,
+    int requestId,
+    ResponseBody responseBody) throws IOException {
+    InputStream stream = responseBody.byteStream();
+    try {
+      Buffer buffer = new Buffer();
+      byte[] bytes = new byte[MIN_BUFFER_SIZE];
+      int read;
+      long last = System.nanoTime();
+      while ((read = stream.read(bytes)) != -1) {
+        buffer.write(bytes);
+        long now = System.nanoTime();
+        if (shouldDispatch(now, last)) {
+          onDataReceived(executorToken, requestId, ByteString.of(buffer.readByteArray()).base64());
+          last = now;
+        }
+      }
+
+      if (buffer.size() > 0) {
+        onDataReceived(executorToken, requestId, ByteString.of(buffer.readByteArray()).base64());
+      }
+    } finally {
+      stream.close();
     }
   }
 
